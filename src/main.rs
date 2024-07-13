@@ -5,6 +5,10 @@ fn main() {
 
   add(&mut stack);
 
+  stack.push(22);
+
+  add(&mut stack);
+
   println!("stack: {stack:?}");
 }
 
