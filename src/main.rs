@@ -100,3 +100,15 @@ fn div(stack: &mut Vec<Value>) {
   let lhs = stack.pop().unwrap().as_num();
   stack.push(Value::Num(lhs / rhs));
 }
+
+#[cfg(test)]
+mod test {
+  use super::{parse, Value::*};
+  #[test]
+  fn test_group() {
+    assert_eq!(
+      parse("1 2 + { 3 4 }"),
+      vec![Num(3), Block(vec![Num(3), Num(4)])]
+    );
+  }
+}
