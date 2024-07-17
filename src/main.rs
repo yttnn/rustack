@@ -8,9 +8,27 @@ struct Vm {
 
 impl Vm {
   fn new() -> Self {
+    let functions: [(&str, fn(&mut Vm)); 12] = [
+      ("+", add),
+      ("-", sub),
+      ("*", mul),
+      ("/", div),
+      ("<", lt),
+      ("if", op_if),
+      ("def", op_def),
+      ("puts", puts),
+      ("pop", pop),
+      ("dup", dup),
+      ("exch", exch),
+      ("index", index),
+    ];
+
     Self {
       stack: vec![],
-      vars: HashMap::new(),
+      vars: functions.into_iter().map(|(name, fun)| {
+        (name.to_owned(), Value::Native(NativeOp(fun)))
+      })
+      .collect(),
       blocks: vec![],
     }
   }
@@ -22,6 +40,7 @@ enum Value {
   Op(String),
   Sym(String),
   Block(Vec<Value>),
+  Native(NativeOp),
 }
 
 impl Value {
@@ -52,7 +71,25 @@ impl Value {
       Self::Num(i) => i.to_string(),
       Self::Op(ref s) | Self::Sym(ref s) => s.clone(),
       Self::Block(_) => "<Block>".to_string(),
+      Self::Native(_) => "<Native>".to_string(),
     }
+  }
+}
+
+#[derive(Clone)]
+struct NativeOp(fn(&mut Vm));
+
+impl PartialEq for NativeOp {
+  fn eq(&self, other: &NativeOp) -> bool {
+    self.0 as *const fn() == other.0 as *const fn()
+  }
+}
+
+impl Eq for NativeOp {}
+
+impl std::fmt::Debug for NativeOp {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "<NativeOp>")
   }
 }
 
@@ -111,31 +148,29 @@ fn eval(code: Value, vm: &mut Vm) {
     top_block.push(code);
     return;
   }
-  match code {
-    Value::Op(ref op) => match op as &str {
-      "+" => add(&mut vm.stack),
-      "-" => sub(&mut vm.stack),
-      "*" => mul(&mut vm.stack),
-      "/" => div(&mut vm.stack),
-      "<" => lt(&mut vm.stack),
-      "if" => op_if(vm),
-      "def" => op_def(vm),
-      "puts" => puts(vm),
-      _ => {
-        let val = vm.vars.get(op).expect(&format!("{op:?} is not a defined operation"));
-        vm.stack.push(val.clone());
+
+  if let Value::Op(ref op) = code {
+    let val = vm.vars.get(op).expect(&format!("{op:?} is not a defined operation")).clone();
+    match val {
+      Value::Block(block) => {
+        for code in block {
+          eval(code, vm);
+        }
       },
-    },
-    _ => vm.stack.push(code.clone()),
+      Value::Native(op) => op.0(vm),
+      _ => vm.stack.push(val),
+    }
+  } else {
+    vm.stack.push(code.clone());
   }
 }
 
 macro_rules! impl_op {
   {$name:ident, $op:tt} => {
-    fn $name(stack: &mut Vec<Value>) {
-      let rhs = stack.pop().unwrap().as_num();
-      let lhs = stack.pop().unwrap().as_num();
-      stack.push(Value::Num((lhs $op rhs) as i32));
+    fn $name(vm: &mut Vm) {
+      let rhs = vm.stack.pop().unwrap().as_num();
+      let lhs = vm.stack.pop().unwrap().as_num();
+      vm.stack.push(Value::Num((lhs $op rhs) as i32));
     }
   }
 }
@@ -180,6 +215,28 @@ fn op_def(vm: &mut Vm) {
 fn puts(vm: &mut Vm) {
   let value = vm.stack.pop().unwrap();
   println!("{}", value.to_string());
+}
+
+fn dup(vm: &mut Vm)  {
+  let value = vm.stack.last().unwrap();
+  vm.stack.push(value.clone());
+}
+
+fn exch(vm: &mut Vm) { //exchange
+  let last = vm.stack.pop().unwrap();
+  let second = vm.stack.pop().unwrap();
+  vm.stack.push(last);
+  vm.stack.push(second);
+}
+
+fn pop(vm: &mut Vm) {
+  vm.stack.pop().unwrap();
+}
+
+fn index(vm: &mut Vm) {
+  let index = vm.stack.pop().unwrap().as_num() as usize;
+  let value = vm.stack[vm.stack.len() - index - 1].clone();
+  vm.stack.push(value);
 }
 
 #[cfg(test)]
@@ -246,6 +303,19 @@ mod test {
         "#
       ),
       vec![Num(10)]
+    );
+  }
+
+  #[test]
+  fn test_function() {
+    assert_eq!(
+      parse(
+        r#"
+        /double { 2 * } def
+        10 double
+        "#
+      ),
+      vec![Num(20)]
     );
   }
 }
