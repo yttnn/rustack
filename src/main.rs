@@ -11,7 +11,7 @@ fn main() {
   let input = "car + cdr + cdr";
   println!("source: {:?}, parsed: {:?}", input, expr(input));
 
-  let input = "((1 + 2) + (3 + 4) + 5 + 6";
+  let input = "((1 + 2) + (3 + 4)) + 5 + 6";
   println!("source: {:?}, parsed: {:?}", input, expr(input));
 
 }
@@ -55,7 +55,7 @@ fn paren(input: &str) -> Option<(&str, Expression)> {
 
 fn add_term(input: &str) -> Option<(&str, Expression)> {
   let (next_input, lhs) = term(input)?;
-  let next_input = plus(whitespace(input))?;
+  let next_input = plus(whitespace(next_input))?;
 
   Some((next_input, lhs))
 }
