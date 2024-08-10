@@ -1,7 +1,7 @@
-use std::io::Read;
+use std::{collections::HashMap, io::Read};
 
 use nom::{
-  branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0}, combinator::{opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair}, Finish, IResult, Parser
+  branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1}, combinator::{opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair}, Finish, IResult, Parser
 };
 
 fn main() {
@@ -15,8 +15,18 @@ fn main() {
       }
     };
 
+    let mut variables = HashMap::new();
+
     for statement in parsed_statements {
-      println!("eval: {:?}", eval(statement));
+      match statement {
+        Statement::Expression(expr) => {
+          println!("eval: {:?}", eval(expr, &variables));
+        }
+        Statement::VarDef(name, expr) => {
+          let value = eval(expr, &variables);
+          variables.insert(name, value);
+        }
+      }
     }
   }
 
@@ -33,57 +43,67 @@ enum Expression<'src> {
   Div(Box<Expression<'src>>, Box<Expression<'src>>),
 }
 
-type Statements<'a> = Vec<Expression<'a>>;
+#[derive(Debug, PartialEq, Clone)]
+enum Statement<'src> {
+  Expression(Expression<'src>),
+  VarDef(&'src str, Expression<'src>),
+}
+
+type Statements<'a> = Vec<Statement<'a>>;
 
 fn unary_fn(
   f: fn(f64) -> f64,
-) -> impl Fn(Vec<Expression>) -> f64 {
-  move |args| {
+) -> impl Fn(Vec<Expression>, &HashMap<&str, f64>) -> f64 {
+  move |args, variables| {
     f(eval(
       args.into_iter().next().expect("function missing argument"),
+      variables,
     ))
   }
 }
 
 fn binary_fn(
   f: fn(f64, f64) -> f64,
-) -> impl Fn(Vec<Expression>) -> f64 {
-  move |args| {
+) -> impl Fn(Vec<Expression>, &HashMap<&str, f64>) -> f64 {
+  move |args, variables| {
     let mut args = args.into_iter();
     let lhs = eval(
       args.next().expect("function missing the first argument"),
+      variables,
     );
     let rhs = eval(
       args.next().expect("function missing the second argument"),
+      variables,
     );
     f(lhs, rhs)
   }
 }
 
-fn eval(expr: Expression) -> f64 {
+fn eval(expr: Expression, vars: &HashMap<&str, f64>) -> f64 {
+  use Expression::*;
   match expr {
-    Expression::Ident("pi") => std::f64::consts::PI,
-    Expression::Ident(id) => panic!("Unknown name {:?}", id),
-    Expression::NumLiteral(n) => n,
-    Expression::FnInvoke("sqrt", args) => unary_fn(f64::sqrt)(args),
-    Expression::FnInvoke("sin", args) => unary_fn(f64::sin)(args),
-    Expression::FnInvoke("cos", args) => unary_fn(f64::cos)(args),
-    Expression::FnInvoke("tan", args) => unary_fn(f64::tan)(args),
-    Expression::FnInvoke("asin", args) => unary_fn(f64::asin)(args),
-    Expression::FnInvoke("acos", args) => unary_fn(f64::acos)(args),
-    Expression::FnInvoke("atan", args) => unary_fn(f64::atan)(args),
-    Expression::FnInvoke("atan2", args) => binary_fn(f64::atan2)(args),
-    Expression::FnInvoke("pow", args) => binary_fn(f64::powf)(args),
-    Expression::FnInvoke("exp", args) => unary_fn(f64::exp)(args),
-    Expression::FnInvoke("log", args) => binary_fn(f64::log)(args),
-    Expression::FnInvoke("log10", args) => unary_fn(f64::log10)(args),
-    Expression::FnInvoke(name, _) => {
+    Ident("pi") => std::f64::consts::PI,
+    Ident(id) => *vars.get(id).expect("Variable not found"),
+    NumLiteral(n) => n,
+    FnInvoke("sqrt", args) => unary_fn(f64::sqrt)(args, vars),
+    FnInvoke("sin", args) => unary_fn(f64::sin)(args, vars),
+    FnInvoke("cos", args) => unary_fn(f64::cos)(args, vars),
+    FnInvoke("tan", args) => unary_fn(f64::tan)(args, vars),
+    FnInvoke("asin", args) => unary_fn(f64::asin)(args, vars),
+    FnInvoke("acos", args) => unary_fn(f64::acos)(args, vars),
+    FnInvoke("atan", args) => unary_fn(f64::atan)(args, vars),
+    FnInvoke("atan2", args) => binary_fn(f64::atan2)(args, vars),
+    FnInvoke("pow", args) => binary_fn(f64::powf)(args, vars),
+    FnInvoke("exp", args) => unary_fn(f64::exp)(args, vars),
+    FnInvoke("log", args) => binary_fn(f64::log)(args, vars),
+    FnInvoke("log10", args) => unary_fn(f64::log10)(args, vars),
+    FnInvoke(name, _) => {
       panic!("Unknown function {name:?}")
     },
-    Expression::Add(lhs, rhs) => eval(*lhs) + eval(*rhs),
-    Expression::Sub(lhs, rhs) => eval(*lhs) - eval(*rhs),
-    Expression::Mul(lhs, rhs) => eval(*lhs) * eval(*rhs),
-    Expression::Div(lhs, rhs) => eval(*lhs) / eval(*rhs),
+    Add(lhs, rhs) => eval(*lhs, vars) + eval(*rhs, vars),
+    Sub(lhs, rhs) => eval(*lhs, vars) - eval(*rhs, vars),
+    Mul(lhs, rhs) => eval(*lhs, vars) * eval(*rhs, vars),
+    Div(lhs, rhs) => eval(*lhs, vars) / eval(*rhs, vars),
   }
 }
 
@@ -177,7 +197,24 @@ fn expr(i: &str) -> IResult<&str, Expression> {
   )(i)
 }
 
+fn var_def(i: &str) -> IResult<&str, Statement> {
+  let (i, _) = delimited(multispace0, tag("var"), multispace1)(i)?;
+  let (i, name) = space_delimited(identifier)(i)?;
+  let (i, _) = space_delimited(char('='))(i)?;
+  let (i, expr) = space_delimited(expr)(i)?;
+  Ok((i, Statement::VarDef(name, expr)))
+}
+
+fn expr_statement(i: &str) -> IResult<&str, Statement> {
+  let (i, res) = expr(i)?;
+  Ok((i, Statement::Expression(res)))
+}
+
+fn statement(i: &str) -> IResult<&str, Statement> {
+  alt((var_def, expr_statement))(i)
+}
+
 fn statements(i: &str,) -> Result<Statements, nom::error::Error<&str>> {
-  let (_, res) = separated_list0(tag(";"), expr)(i).finish()?;
+  let (_, res) = separated_list0(tag(";"), statement)(i).finish()?;
   Ok(res)
 }
