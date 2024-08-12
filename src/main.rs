@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Read};
 
 use nom::{
-  branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1}, combinator::{opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair}, Finish, IResult, Parser
+  branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1}, combinator::{opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair, preceded}, Finish, IResult, Parser
 };
 
 fn main() {
@@ -48,6 +48,11 @@ enum Expression<'src> {
   Sub(Box<Expression<'src>>, Box<Expression<'src>>),
   Mul(Box<Expression<'src>>, Box<Expression<'src>>),
   Div(Box<Expression<'src>>, Box<Expression<'src>>),
+  If(
+    Box<Expression<'src>>,
+    Box<Expression<'src>>,
+    Option<Box<Expression<'src>>>,
+  )
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -112,6 +117,15 @@ fn eval(expr: Expression, vars: &HashMap<&str, f64>) -> f64 {
     Sub(lhs, rhs) => eval(*lhs, vars) - eval(*rhs, vars),
     Mul(lhs, rhs) => eval(*lhs, vars) * eval(*rhs, vars),
     Div(lhs, rhs) => eval(*lhs, vars) / eval(*rhs, vars),
+    If(cond, t_case, f_case) => {
+      if eval(*cond, vars) != 0. {
+        eval(*t_case, vars)
+      } else if let Some(f_case) = f_case {
+        eval(*f_case, vars)
+      } else {
+        0.
+      }
+    }
   }
 }
 
@@ -189,7 +203,7 @@ fn parens(i: &str) -> IResult<&str, Expression> {
   space_delimited(delimited(tag("("), expr, tag(")")))(i)
 }
 
-fn expr(i: &str) -> IResult<&str, Expression> {
+fn num_expr(i: &str) -> IResult<&str, Expression> {
   let (i, init) = term(i)?;
 
   fold_many0(
@@ -203,6 +217,35 @@ fn expr(i: &str) -> IResult<&str, Expression> {
       ),
     },
   )(i)
+}
+
+fn open_brace(i: &str) -> IResult<&str, ()> {
+  let (i, _) = space_delimited(char('{'))(i)?;
+  Ok((i, ()))
+}
+
+fn close_brace(i: &str) -> IResult<&str, ()> {
+  let (i, _) = space_delimited(char('}'))(i)?;
+  Ok((i, ()))
+}
+
+fn if_expr(i: &str) -> IResult<&str, Expression> {
+  let (i, _) = space_delimited(tag("if"))(i)?;
+  let (i, cond) = expr(i)?;
+  let (i, t_case) = delimited(open_brace, expr, close_brace)(i)?;
+  let (i, f_case) = opt(preceded(
+    space_delimited(tag("else")),
+    delimited(open_brace, expr, close_brace),
+  ))(i)?;
+
+  Ok((
+    i,
+    Expression::If(Box::new(cond), Box::new(t_case), f_case.map(Box::new)),
+  ))
+}
+
+fn expr(i: &str) -> IResult<&str, Expression> {
+  alt((if_expr, num_expr))(i)
 }
 
 fn var_def(i: &str) -> IResult<&str, Statement> {
