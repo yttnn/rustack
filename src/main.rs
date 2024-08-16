@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Read};
+use std::{collections::HashMap, io::Read, ops::ControlFlow};
 
 use nom::{
   branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1}, combinator::{opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair, preceded, terminated}, Finish, IResult, Parser
@@ -40,7 +40,10 @@ impl<'src> FnDef<'src> {
           .zip(code.args.iter())
           .map(|(arg, name)| (name.to_string(), *arg))
           .collect();
-        eval_stmts(&code.stmts, &mut new_frame)
+        match eval_stmts(&code.stmts, &mut new_frame) {
+          EvalResult::Continue(val) |
+          EvalResult::Break(val) => val,
+        }
       }
       Self::Native(code) => (code.code)(args),
     }
@@ -113,30 +116,30 @@ fn print(arg: f64) -> f64 {
   0.
 }
 
-fn eval_stmts<'src>(stmts: &[Statement<'src>], frame: &mut StackFrame<'src>) -> f64 {
-  let mut last_result = 0.;
+fn eval_stmts<'src>(stmts: &[Statement<'src>], frame: &mut StackFrame<'src>) -> EvalResult {
+  let mut last_result = EvalResult::Continue(0.);
   for statement in stmts {
     match statement {
       Statement::Expression(expr) => {
-        last_result = eval(expr, frame);
+        last_result = EvalResult::Continue(eval(expr, frame)?);
       }
       Statement::VarDef(name, expr) => {
-        let value = eval(expr, frame);
+        let value = eval(expr, frame)?;
         frame.vars.insert(name.to_string(), value);
       }
       Statement::VarAssign(name, expr) => {
         if !frame.vars.contains_key(*name) {
           panic!("Variable is not defined");
         }
-        let value = eval(expr, frame);
+        let value = eval(expr, frame)?;
         frame.vars.insert(name.to_string(), value);
       }
       Statement::For { loop_var, start, end, stmts } => {
-        let start = eval(start, frame) as isize;
-        let end = eval(end, frame) as isize;
+        let start = eval(start, frame)? as isize;
+        let end = eval(end, frame)? as isize;
         for i in start..end {
           frame.vars.insert(loop_var.to_string(), i as f64);
-          eval_stmts(stmts, frame);
+          eval_stmts(stmts, frame)?;
         }
       }
       Statement::FnDef { name, args, stmts } => {
@@ -147,6 +150,9 @@ fn eval_stmts<'src>(stmts: &[Statement<'src>], frame: &mut StackFrame<'src>) -> 
             stmts: stmts.clone(),
           }),
         );
+      }
+      Statement::Return(expr) => {
+        return EvalResult::Break(eval(expr, frame)?);
       }
     }
   }
@@ -166,8 +172,8 @@ enum Expression<'src> {
   Lt(Box<Expression<'src>>, Box<Expression<'src>>),
   If(
     Box<Expression<'src>>,
-    Box<Expression<'src>>,
-    Option<Box<Expression<'src>>>,
+    Box<Statements<'src>>,
+    Option<Box<Statements<'src>>>,
   ),
 }
 
@@ -187,6 +193,7 @@ enum Statement<'src> {
     args: Vec<&'src str>,
     stmts: Statements<'src>,
   },
+  Return(Expression<'src>),
 }
 
 type Statements<'a> = Vec<Statement<'a>>;
@@ -210,48 +217,54 @@ fn binary_fn<'a>(f: fn(f64, f64) -> f64) -> FnDef<'a> {
   })
 }
 
-fn eval(expr: &Expression, frame: &StackFrame) -> f64 {
+type EvalResult = ControlFlow<f64, f64>;
+
+fn eval<'src>(expr: &Expression<'src>, frame: &mut StackFrame<'src>) -> EvalResult {
   use Expression::*;
-  match expr {
+  let res = match expr {
     Ident("pi") => std::f64::consts::PI,
     Ident(id) => *frame.vars.get(*id).expect("Variable not found"),
     NumLiteral(n) => *n,
     FnInvoke(name, args) => {
+      let mut arg_vals = vec![];
+      for arg in args.iter() {
+        arg_vals.push(eval(arg, frame)?);
+      }
       if let Some(func) = frame.get_fn(*name) {
-        let args: Vec<_> = args.iter().map(|arg| eval(arg, frame)).collect();
-        func.call(&args, frame)
+        func.call(&arg_vals, frame)
       } else {
         panic!("Unknown function {name:?}");
       }
     }
-    Add(lhs, rhs) => eval(lhs, frame) + eval(rhs, frame),
-    Sub(lhs, rhs) => eval(lhs, frame) - eval(rhs, frame),
-    Mul(lhs, rhs) => eval(lhs, frame) * eval(rhs, frame),
-    Div(lhs, rhs) => eval(lhs, frame) / eval(rhs, frame),
+    Add(lhs, rhs) => eval(lhs, frame)? + eval(rhs, frame)?,
+    Sub(lhs, rhs) => eval(lhs, frame)? - eval(rhs, frame)?,
+    Mul(lhs, rhs) => eval(lhs, frame)? * eval(rhs, frame)?,
+    Div(lhs, rhs) => eval(lhs, frame)? / eval(rhs, frame)?,
     Gt(lhs, rhs) => {
-      if eval(lhs, frame) > eval(rhs, frame) {
+      if eval(lhs, frame)? > eval(rhs, frame)? {
         1.
       } else {
         0.
       }
     }
     Lt(lhs, rhs) => {
-      if eval(lhs, frame) < eval(rhs, frame) {
+      if eval(lhs, frame)? < eval(rhs, frame)? {
         1.
       } else {
         0.
       }
     }
     If(cond, t_case, f_case) => {
-      if eval(cond, frame) != 0. {
-        eval(t_case, frame)
+      if eval(cond, frame)? != 0. {
+        eval_stmts(t_case, frame)?
       } else if let Some(f_case) = f_case {
-        eval(f_case, frame)
+        eval_stmts(f_case, frame)?
       } else {
         0.
       }
     }
-  }
+  };
+  EvalResult::Continue(res)
 }
 
 fn space_delimited<'src, O, E>(
@@ -371,10 +384,10 @@ fn close_brace(i: &str) -> IResult<&str, ()> {
 fn if_expr(i: &str) -> IResult<&str, Expression> {
   let (i, _) = space_delimited(tag("if"))(i)?;
   let (i, cond) = expr(i)?;
-  let (i, t_case) = delimited(open_brace, expr, close_brace)(i)?;
+  let (i, t_case) = delimited(open_brace, statements, close_brace)(i)?;
   let (i, f_case) = opt(preceded(
     space_delimited(tag("else")),
-    delimited(open_brace, expr, close_brace),
+    delimited(open_brace, statements, close_brace),
   ))(i)?;
 
   Ok((
@@ -437,19 +450,55 @@ fn fn_def_statement(i: &str) -> IResult<&str, Statement> {
   Ok((i, Statement::FnDef { name, args, stmts }))
 }
 
-fn statement(i: &str) -> IResult<&str, Statement> {
-  alt((
-    for_statement,
-    fn_def_statement,
-    terminated(
-      alt((var_def, var_assign, expr_statement)),
-      char(';')),
-  ))(i)
+fn return_statement(i: &str) -> IResult<&str, Statement> {
+  let (i, _) = space_delimited(tag("return"))(i)?;
+  let (i, ex) = space_delimited(expr)(i)?;
+  Ok((i, Statement::Return(ex)))
+}
+
+fn general_statement<'a>(
+  last: bool,
+) -> impl Fn(&'a str) -> IResult<&'a str, Statement> {
+  let terminator = move |i| -> IResult<&str, ()> {
+    let mut semicolon = pair(tag(";"), multispace0);
+    if last {
+      Ok((opt(semicolon)(i)?.0, ()))
+    } else {
+      Ok((semicolon(i)?.0, ()))
+    }
+  };
+
+  move |input| {
+    alt((
+      var_def,
+      var_assign,
+      fn_def_statement,
+      for_statement,
+      terminated(return_statement, terminator),
+      terminated(expr_statement, terminator),
+    ))(input)
+  }
+}
+
+pub(crate) fn last_statement(
+  input: &str,
+) -> IResult<&str, Statement> {
+  general_statement(true)(input)
+}
+
+pub(crate) fn statement(
+  input: &str,
+) -> IResult<&str, Statement> {
+  general_statement(false)(input)
 }
 
 fn statements(i: &str) -> IResult<&str, Statements> {
-  let (i, stmts) = many0(statement)(i)?;
-  let (i, _) = opt(char(';'))(i)?;
+  let (i, mut stmts) = many0(statement)(i)?;
+  let (i, last) = opt(last_statement)(i)?;
+  let (i, _) = opt(multispace0)(i)?;
+  if let Some(last) = last {
+    stmts.push(last);
+  }
   Ok((i, stmts))
 }
 
