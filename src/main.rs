@@ -412,7 +412,7 @@ fn type_check<'src>(
       }
       Statement::For { loop_var, start, end, stmts, } => {
         tc_coerce_type(&tc_expr(start, ctx)?, &TypeDecl::I64)?;
-        tc_coerce_type(&tc_expr(&end, ctx)?, &TypeDecl::I64)?;
+        tc_coerce_type(&tc_expr(end, ctx)?, &TypeDecl::I64)?;
         ctx.vars.insert(loop_var, TypeDecl::I64);
         res = type_check(stmts, ctx)?;
       }
@@ -738,7 +738,7 @@ fn eval<'src>(expr: &Expression<'src>, frame: &mut StackFrame<'src>) -> EvalResu
   use Expression::*;
   let res = match expr {
     Ident("pi") => Value::F64(std::f64::consts::PI),
-    Ident(id) => frame.vars.get(*id).cloned().expect(&format!("Variable not foud: {id}")),
+    Ident(id) => frame.vars.get(*id).cloned().expect(&format!("Variable not foud: {id:?}")),
     NumLiteral(n) => Value::F64(*n),
     StrLiteral(s) => Value::Str(s.clone()),
     FnInvoke(name, args) => {
@@ -1036,8 +1036,10 @@ fn general_statement<'a>(
 
   move |input| {
     alt((
-      terminated(var_def, terminator),
-      terminated(var_assign, terminator),
+      // terminated(var_def, terminator),
+      // terminated(var_assign, terminator),
+      var_def,
+      var_assign,
       fn_def_statement,
       for_statement,
       terminated(return_statement, terminator),
