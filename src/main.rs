@@ -1,34 +1,68 @@
-use std::{cmp::Ordering, collections::HashMap, io::Read, ops::ControlFlow};
+use std::{cmp::Ordering, collections::HashMap, io::Read, ops::{Add, ControlFlow}};
 
 use nom::{
   branch::alt, bytes::complete::tag, character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1, none_of}, combinator::{cut, map_res, opt, recognize}, error::ParseError, multi::{fold_many0, many0, separated_list0}, number::complete::recognize_float, sequence::{delimited, pair, preceded, terminated}, Finish, IResult, InputTake, Offset,Parser
 };
 use nom_locate::LocatedSpan;
 
+enum Instruction {
+  LoadLiteral(i64),
+  Add,
+}
+
 fn main() {
-  let mut buf = String::new();
-  if !std::io::stdin().read_to_string(&mut buf).is_ok() {
-    panic!("Failed to read from stdin");
-  }
-  let parsed_statements = match statements_finish(Span::new(&buf)) {
-    Ok(parsed_statements) => parsed_statements,
-    Err(e) => {
-      eprintln!("Parse error: {e:?}");
-      return;
+
+  let instruction = [
+    Instruction::LoadLiteral(42),
+    Instruction::LoadLiteral(36),
+    Instruction::Add,
+  ];
+
+  let result = interpret(&instruction);
+
+  println!("result: {result:?}");
+
+  // let mut buf = String::new();
+  // if !std::io::stdin().read_to_string(&mut buf).is_ok() {
+  //   panic!("Failed to read from stdin");
+  // }
+  // let parsed_statements = match statements_finish(Span::new(&buf)) {
+  //   Ok(parsed_statements) => parsed_statements,
+  //   Err(e) => {
+  //     eprintln!("Parse error: {e:?}");
+  //     return;
+  //   }
+  // };
+
+  // let mut tc_ctx = TypeCheckContext::new();
+
+  // if let Err(err) = type_check(&parsed_statements, &mut tc_ctx) {
+  //   println!("Type check error: {err}");
+  //   return;
+  // }
+  // println!("Type check OK");
+
+  // let mut frame = StackFrame::new();
+
+  // eval_stmts(&parsed_statements, &mut frame);
+}
+
+
+fn interpret(instructions: &[Instruction]) -> Option<i64> {
+  let mut stack = vec![];
+
+  for instruction in instructions {
+    match instruction {
+      Instruction::LoadLiteral(value) => stack.push(*value),
+      Instruction::Add => {
+        let rhs = stack.pop().expect("Stack underflow");
+        let lhs = stack.pop().expect("Stack underflow");
+        stack.push(lhs + rhs);
+      }
     }
-  };
-
-  let mut tc_ctx = TypeCheckContext::new();
-
-  if let Err(err) = type_check(&parsed_statements, &mut tc_ctx) {
-    println!("Type check error: {err}");
-    return;
   }
-  println!("Type check OK");
 
-  let mut frame = StackFrame::new();
-
-  eval_stmts(&parsed_statements, &mut frame);
+  stack.pop()
 }
 
 #[derive(Debug, Clone, PartialEq)]
